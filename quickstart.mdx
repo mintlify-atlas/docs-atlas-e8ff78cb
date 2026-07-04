@@ -1,47 +1,141 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with DSVPN in Under 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Generate a shared key, start DSVPN on your server, and connect from your client. Full tunnel up in three commands."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks through establishing a fully encrypted VPN tunnel in three steps: generating a shared key, starting DSVPN on your server, and connecting from your client. By the end you will have all traffic from your client device routed through your server with no firewall rules to configure manually.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+<Warning>
+  Keep `vpn.key` secret at all times. It is the **only credential** protecting your tunnel. Anyone who obtains this file can decrypt your traffic or impersonate either endpoint.
+</Warning>
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Build DSVPN on both server and client">
+    You need the `dsvpn` binary on both machines. On each machine, run:
 
     ```bash
-    npm install your-package
+    git clone https://github.com/jedisct1/dsvpn.git
+    cd dsvpn
+    make
+    ```
+
+    On macOS, you can install via Homebrew instead:
+
+    ```bash
+    brew install dsvpn
+    ```
+
+    Confirm the build succeeded by checking that the binary exists:
+
+    ```bash
+    ls -lh dsvpn
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Generate the shared key on the server">
+    DSVPN uses a pre-shared symmetric key rather than certificates. Generate a 32-byte random key on your **server**:
 
     ```bash
-    your-cli init
+    dd if=/dev/urandom of=vpn.key count=1 bs=32
+    ```
+
+    This creates a file called `vpn.key` in the current directory. Protect it immediately:
+
+    ```bash
+    chmod 600 vpn.key
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Copy the key to the client">
+    The same `vpn.key` file must be present on the client. The safest transfer method is `scp` or another authenticated channel. If you need to copy it through a text medium, encode it as Base64 first.
+
+    **On the server** — export the key as Base64:
 
     ```bash
-    your-cli start
+    base64 < vpn.key
     ```
+
+    This prints a single line such as `HK940OkWcFqSmZXnCQ1w6jhQMZm0fZoEhQOOpzJ/l3w=`.
+
+    **On the client** — paste that line into the following command to recreate the key file:
+
+    ```bash
+    echo 'PASTE_BASE64_HERE' | base64 --decode > vpn.key
+    chmod 600 vpn.key
+    ```
+
+    Replace `PASTE_BASE64_HERE` with the actual Base64 string printed by the server.
+  </Step>
+
+  <Step title="Start the server">
+    On your **server**, run DSVPN in server mode. The `auto` argument tells DSVPN to detect and use the system's public IP address automatically:
+
+    ```bash
+    sudo ./dsvpn server vpn.key auto 1959
+    ```
+
+    - `vpn.key` — path to the shared key file
+    - `auto` — use the server's detected external IP address
+    - `1959` — TCP port to listen on (replace with your preferred port)
+
+    The server will print its tunnel IP and begin listening for incoming connections. Leave this process running.
+
+    <Note>
+      The default port is **443**. If you want to use 443, the port argument can be omitted entirely: `sudo ./dsvpn server vpn.key`
+    </Note>
+  </Step>
+
+  <Step title="Connect the client">
+    On your **client**, run DSVPN in client mode, supplying the server's public IP address and the same port:
+
+    ```bash
+    sudo ./dsvpn client vpn.key 34.216.127.34 1959
+    ```
+
+    - `vpn.key` — path to the shared key file (copied in Step 3)
+    - `34.216.127.34` — replace with your server's actual public IP address or hostname
+    - `1959` — must match the port the server is listening on
+
+    Once the handshake completes, the client will print `Connected` and all outbound traffic will be routed through the server.
+
+    <Note>
+      Just like the server, the port argument is optional when using the default port 443.
+    </Note>
+  </Step>
+
+  <Step title="Verify the connection">
+    After seeing `Connected` in the client output, verify that your traffic is leaving through the server by checking your public IP address:
+
+    ```bash
+    curl https://ifconfig.me
+    ```
+
+    The returned IP should be your **server's** public IP, not your local one. Both the TUN interface and routing rules were configured automatically by DSVPN.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## What Happens When You Connect
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+When DSVPN starts, it performs the following steps automatically — no manual intervention needed:
+
+1. **Creates a TUN interface** — a virtual network device (e.g., `tun0` on Linux) is brought up with the tunnel IP addresses (`192.168.192.254` on the server, `192.168.192.1` on the client by default).
+2. **Configures routing** — on Linux, iptables rules are added to route all client traffic through the tunnel. On BSD and macOS, equivalent `ifconfig` and `route` commands are issued.
+3. **Blocks IPv6** — IPv6 is suppressed on the client to prevent leaks on dual-stack networks.
+4. **Maintains the connection** — if the TCP connection drops, DSVPN automatically attempts to reconnect up to 100 times before giving up.
+
+All of these steps are reversed cleanly when the process exits.
+
+## Disconnecting
+
+Press `Ctrl-C` on either the server or the client to initiate a clean shutdown:
+
+```bash
+^C
+```
+
+DSVPN catches the interrupt signal and removes all routing rules and firewall entries it added during startup, restoring your network configuration to its prior state. You do not need to run any cleanup commands manually.
+
+<Tip>
+  For production deployments where you need DSVPN to start automatically at boot and restart on failure, check out the [systemd service files](https://github.com/ebal/scripts/tree/master/dsvpn) maintained by Evaggelos Balaskas. They provide ready-made unit files for both the server and client roles.
 </Tip>

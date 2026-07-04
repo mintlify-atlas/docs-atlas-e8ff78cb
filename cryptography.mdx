@@ -1,0 +1,174 @@
+---
+title: "DSVPN Cryptography: Charm AEAD Stream Cipher"
+sidebarTitle: "Cryptography"
+description: "DSVPN encrypts traffic using the Charm library, a formally verified AEAD stream cipher. Learn the key exchange protocol, packet format, and session key derivation."
+---
+
+DSVPN's cryptographic layer is powered by [Charm](https://github.com/jedisct1/charm), a standalone AEAD stream cipher library with formally verified implementations. All encryption, authentication, hashing, and random number generation go through Charm's six public functions — no OpenSSL, no libsodium, no external dependencies of any kind.
+
+## The Charm Library
+
+Charm is an AEAD (Authenticated Encryption with Associated Data) stream cipher built on the [Xoodoo](https://keccak.team/xoodoo.html) permutation — a 12-round ARX-based construction operating on a 48-byte state represented as 12 `uint32_t` words. Implementations have been formally verified and the library is embedded directly in the DSVPN source tree.
+
+Key properties:
+
+- **No heap allocations**: the entire 48-byte state lives on the stack
+- **SIMD-accelerated**: SSSE3 (x86) and NEON (ARM) paths are compiled in automatically
+- **Formally verified**: implementations of the underlying permutation have been verified
+- **Self-contained**: compiles with a single `#include "charm.h"`
+
+The complete public API used by DSVPN:
+
+```c
+void uc_state_init(uint32_t st[12], const unsigned char key[32], const unsigned char iv[16]);
+void uc_encrypt(uint32_t st[12], unsigned char *msg, size_t msg_len, unsigned char tag[16]);
+int  uc_decrypt(uint32_t st[12], unsigned char *msg, size_t msg_len,
+                const unsigned char *expected_tag, size_t expected_tag_len);
+void uc_hash(uint32_t st[12], unsigned char h[32], const unsigned char *msg, size_t len);
+void uc_memzero(void *buf, size_t len);
+void uc_randombytes_buf(void *buf, size_t len);
+```
+
+Each function's role:
+
+| Function | Purpose |
+|---|---|
+| `uc_state_init` | Absorb a 32-byte key and 16-byte IV into a fresh 48-byte state |
+| `uc_encrypt` | In-place encrypt and produce a 16-byte authentication tag |
+| `uc_decrypt` | In-place decrypt and verify the authentication tag |
+| `uc_hash` | Sponge-style hash of arbitrary data into 32 bytes |
+| `uc_memzero` | Volatile-barrier zeroing of sensitive buffers |
+| `uc_randombytes_buf` | OS-backed random bytes (`getrandom` on Linux, `arc4random_buf` elsewhere) |
+
+## Key Exchange Protocol
+
+Every new TCP connection begins with a mutual authentication handshake. The raw 32-byte key file is loaded once at startup into a key-exchange state, and new per-connection session keys are derived from that shared state.
+
+<Steps>
+  <Step title="Load key file → initialize KX state">
+    On startup, `load_key_file` reads the 32-byte key and calls:
+
+    ```c
+    uc_state_init(uc_kx_st, key, (const unsigned char *) "VPN Key Exchange");
+    uc_memzero(key, sizeof key);
+    ```
+
+    The raw key bytes are zeroed immediately after absorption. From this point on, only the derived KX state is retained in memory.
+  </Step>
+
+  <Step title="Client sends challenge packet">
+    The client generates a 72-byte packet and sends it to the server:
+
+    ```text
+    [ 32 bytes: random nonce  ]
+    [  8 bytes: timestamp (big-endian uint64) ]
+    [ 32 bytes: uc_hash(kx_st, random + timestamp) ]
+    ```
+
+    The timestamp is the current Unix time encoded as a big-endian `uint64_t`.
+  </Step>
+
+  <Step title="Server verifies and replies">
+    The server copies the shared KX state locally, recomputes the hash over the first 40 bytes, and confirms it matches the trailing 32 bytes. It then checks that the client's timestamp falls within `TS_TOLERANCE = 7200` seconds (±2 hours) of its own clock.
+
+    On success the server sends a 64-byte reply:
+
+    ```text
+    [ 32 bytes: random nonce  ]
+    [ 32 bytes: uc_hash(kx_st, server nonce) ]
+    ```
+  </Step>
+
+  <Step title="Client verifies server reply">
+    The client recomputes the hash over the 32-byte server nonce and confirms it matches the trailing 32 bytes of the server's reply.
+  </Step>
+
+  <Step title="Both sides derive session key and initialize streams">
+    After successful mutual authentication, both sides call:
+
+    ```c
+    uc_hash(st, k, NULL, 0);   /* derive 32-byte session key k */
+    ```
+
+    The session key `k` is then used to initialize two directional stream states:
+
+    ```c
+    uint8_t iv[16] = { 0 };
+
+    iv[0] = is_server;            /* 1 on server, 0 on client */
+    uc_state_init(uc_st[0], k, iv);   /* TX stream */
+    iv[0] ^= 1;
+    uc_state_init(uc_st[1], k, iv);   /* RX stream */
+    ```
+
+    Because the server sets `iv[0] = 1` for TX and the client sets `iv[0] = 0` for TX, the server's TX stream is identical to the client's RX stream, and vice versa — the two endpoints are perfectly synchronized without any additional negotiation.
+  </Step>
+</Steps>
+
+<Note>
+  The raw 32-byte key loaded from disk is **never** used directly for packet encryption. It authenticates the handshake only. Each new TCP connection derives a fresh session key via `uc_hash`, so the on-wire session keys are independent of the stored key file beyond the initial authentication.
+</Note>
+
+## Packet Wire Format
+
+Every encrypted packet sent over the TCP connection uses the following layout:
+
+```text
+┌───────────────┬─────────────────┬───────────────────┐
+│ length (2 B)  │ auth tag (6 B)  │ ciphertext (N B)  │
+└───────────────┴─────────────────┴───────────────────┘
+```
+
+| Field | Size | Description |
+|---|---|---|
+| `length` | 2 bytes | Big-endian `uint16_t` — length of the plaintext/ciphertext payload |
+| `auth tag` | 6 bytes | First `TAG_LEN = 6` bytes of the 16-byte Charm authentication tag |
+| `ciphertext` | N bytes | In-place encrypted payload (same length as plaintext) |
+
+The sending path (from `event_loop` in `vpn.c`):
+
+```c
+unsigned char tag_full[16];
+uint16_t      binlen = endian_swap16((uint16_t) len);
+
+memcpy(tx_buf.len, &binlen, 2);
+uc_encrypt(uc_st[0], tx_buf.data, (size_t) len, tag_full);
+memcpy(tx_buf.tag, tag_full, TAG_LEN);           /* store only 6 bytes */
+```
+
+The receiving path:
+
+```c
+if (uc_decrypt(uc_st[1], client_buf.data, (size_t) len,
+               client_buf.tag, TAG_LEN) != 0) {
+    fprintf(stderr, "Corrupted stream\n");
+    sleep(1);
+    return client_reconnect(context);
+}
+```
+
+Any authentication failure — whether from network corruption, a truncated stream, or an active tampering attempt — causes DSVPN to log `"Corrupted stream"` and immediately reconnect. There is no partial-trust fallback.
+
+<Note>
+  `TAG_LEN` is 6 bytes, truncated from the full 16-byte Charm tag. This is a deliberate trade-off between bandwidth efficiency and authentication strength, providing 48-bit authentication tags. The full 128-bit tag is generated internally; only the first 6 bytes are transmitted.
+</Note>
+
+## Replay and Timing Attacks
+
+DSVPN addresses replay at two layers:
+
+**Handshake replay**: the 8-byte big-endian timestamp in the client's challenge packet is verified by the server. If the clock difference between client and server exceeds `TS_TOLERANCE = 7200` seconds (2 hours), the handshake is rejected. A captured handshake packet cannot be replayed after the tolerance window expires.
+
+**Packet replay**: the Charm stream cipher state advances monotonically with every packet processed. There is no mechanism to rewind or replay the state, so a replayed ciphertext will be decrypted incorrectly and its authentication tag will fail verification, triggering a reconnect.
+
+Clocks on both endpoints must be reasonably synchronized (within 2 hours). Use NTP or equivalent to ensure this in production.
+
+## Memory Security
+
+DSVPN takes explicit steps to minimize the lifetime of sensitive key material in memory:
+
+- **`uc_memzero`** uses a `volatile` pointer loop that cannot be optimized away by the compiler, ensuring the key buffer is actually zeroed rather than elided as dead code.
+- The 32-byte key loaded from disk is zeroed via `uc_memzero` immediately after `uc_state_init` absorbs it into the KX state.
+- Session key `k` (32 bytes, stack-allocated) goes out of scope after stream initialization and is not explicitly carried forward.
+- **No heap allocations**: `Buf` structs and the `Context` struct are allocated on the stack in `main()`. There are no `malloc`/`free` cycles that could leave key material in freed heap pages.
+- On connection teardown, `client_disconnect` calls `memset(context->uc_st, 0, sizeof context->uc_st)` to clear both stream states.

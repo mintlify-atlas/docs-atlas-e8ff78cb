@@ -1,0 +1,117 @@
+---
+title: "Install DSVPN on Linux, macOS, and BSD Systems"
+sidebarTitle: "Installation"
+description: "Build DSVPN from source with make or zig, or install via Homebrew on macOS. No external runtime dependencies required."
+---
+
+DSVPN compiles to a single ~25 KB binary with no external runtime dependencies. All you need is a C compiler and standard POSIX headers — both of which are present on any typical development machine. The build system auto-detects compiler flags such as `-march=native` and `-O3`, so a plain `make` is enough to produce an optimized binary for your platform.
+
+<Tabs>
+  <Tab title="Linux">
+    Clone the repository and run `make`:
+
+    ```bash
+    git clone https://github.com/jedisct1/dsvpn.git
+    cd dsvpn
+    make
+    ```
+
+    This produces a stripped `dsvpn` binary in the current directory. To install it system-wide, run:
+
+    ```bash
+    sudo make install
+    ```
+
+    This places the binary at `/usr/local/sbin/dsvpn`.
+
+    <Note>
+      Linux kernel **3.17 or newer** is required. Earlier kernels lack the TUN interface features that DSVPN depends on.
+    </Note>
+  </Tab>
+  <Tab title="macOS">
+    The easiest path on macOS is Homebrew:
+
+    ```bash
+    brew install dsvpn
+    ```
+
+    Alternatively, you can build from source. Make sure Xcode Command Line Tools are installed (`xcode-select --install`), then:
+
+    ```bash
+    git clone https://github.com/jedisct1/dsvpn.git
+    cd dsvpn
+    make
+    ```
+
+    The resulting `dsvpn` binary can be run directly from the source directory or copied to a location on your `PATH`.
+  </Tab>
+  <Tab title="BSD">
+    Building from source works on OpenBSD, FreeBSD, DragonFly BSD, and NetBSD using the same `make` command:
+
+    ```bash
+    git clone https://github.com/jedisct1/dsvpn.git
+    cd dsvpn
+    make
+    ```
+
+    Full server and client routing support is available on **OpenBSD, FreeBSD, DragonFly BSD, and NetBSD**. On other BSDs, only client and point-to-point operation is supported.
+
+    <Note>
+      On NetBSD, the default MTU is set to **1500** instead of the usual 9000 used on other platforms.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Raspberry Pi
+
+On Raspberry Pi 3 and 4, pass the `OPTFLAGS` variable to enable ARM NEON SIMD optimizations, which noticeably improve cryptographic throughput:
+
+```bash
+env OPTFLAGS=-mfpu=neon make
+```
+
+This is otherwise identical to a standard `make` build and produces the same single `dsvpn` binary.
+
+## Build with Zig
+
+If you have [Zig](https://ziglang.org) installed, you can use it as an alternative build system. Zig performs cross-compilation and produces a stripped binary optimized for small size:
+
+```bash
+zig build -Drelease
+```
+
+The compiled binary is placed at:
+
+```text
+zig-out/bin/dsvpn
+```
+
+This path can be used directly in place of `./dsvpn` in all commands shown throughout the documentation.
+
+## System Installation
+
+The Makefile provides `install` and `uninstall` targets for placing DSVPN into the standard system binary path:
+
+```bash
+# Install to /usr/local/sbin/dsvpn
+sudo make install
+
+# Remove the installed binary
+sudo make uninstall
+```
+
+The install prefix defaults to `/usr/local`. Override it with the `PREFIX` variable if you need a different location:
+
+```bash
+sudo make install PREFIX=/opt/dsvpn
+```
+
+This installs the binary to `/opt/dsvpn/sbin/dsvpn`.
+
+<Note>
+  Running DSVPN always requires **root privileges** (or `CAP_NET_ADMIN` on Linux). It needs them to create a TUN interface and modify the system routing table. Use `sudo ./dsvpn` or run as root.
+</Note>
+
+<Warning>
+  Linux kernel **3.17 or later** is required for TUN device support. If you are running an older kernel (common on some embedded systems or long-term-support distributions), DSVPN will not be able to create the tunnel interface.
+</Warning>

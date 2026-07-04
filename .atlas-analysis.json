@@ -1,0 +1,71 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "DSVPN",
+  "projectDescription": "A Dead Simple VPN that tunnels traffic over TCP using modern, formally-verified cryptography with zero configuration files and minimal setup.",
+  "theme": "aspen",
+  "primaryColor": "#242b2c",
+  "lightColor": "#6a6a6d",
+  "darkColor": "#ebeaea",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "installation",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Usage",
+        "pages": [
+          "key-management",
+          "server-setup",
+          "client-setup",
+          "command-reference"
+        ]
+      },
+      {
+        "group": "Configuration",
+        "pages": [
+          "advanced-configuration",
+          "network-and-dns",
+          "operating-systems"
+        ]
+      },
+      {
+        "group": "Internals",
+        "pages": [
+          "cryptography",
+          "security",
+          "related-projects"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Runs on TCP — works on restricted networks where only TCP/443 is open",
+    "Modern cryptography via the Charm library with formally verified implementations",
+    "Zero configuration files — single command to start server or client",
+    "~25 KB binary with no external runtime dependencies",
+    "Automatic firewall and routing rule management on Linux, macOS, OpenBSD, and BSDs",
+    "No heap allocations — small, constant memory footprint",
+    "Automatic reconnection on disconnect without traffic leaks",
+    "IPv6 leak prevention by blocking IPv6 on the client",
+    "BBR congestion control and bufferbloat mitigation via TCP_NOTSENT_LOWAT"
+  ],
+  "publicApiSurface": [
+    "dsvpn server <key file> [<server ip>|auto] [<port>|auto] [<tun iface>|auto] [<local tun ip>|auto] [<remote tun ip>|auto] [<external ip>|auto]",
+    "dsvpn client <key file> <server ip or name> [<port>|auto] [<tun iface>|auto] [<local tun ip>|auto] [<remote tun ip>|auto] [<gateway ip>|auto]",
+    "dd if=/dev/urandom of=vpn.key count=1 bs=32  — key generation",
+    "base64 < vpn.key  — export key as printable string",
+    "echo '<base64>' | base64 --decode > vpn.key  — import key from printable string",
+    "DEFAULT_PORT=443",
+    "DEFAULT_CLIENT_IP=192.168.192.1",
+    "DEFAULT_SERVER_IP=192.168.192.254",
+    "DEFAULT_MTU=9000 (1500 on NetBSD)",
+    "RECONNECT_ATTEMPTS=100",
+    "TAG_LEN=6",
+    "TS_TOLERANCE=7200 (seconds clock skew tolerance)"
+  ]
+}

@@ -1,0 +1,100 @@
+---
+title: "Advanced DSVPN Configuration Options"
+sidebarTitle: "Advanced Config"
+description: "Customize DSVPN tunnel IPs, interface names, ports, and use NO_DEFAULT_ROUTES for point-to-point tunnels without full traffic routing."
+---
+
+DSVPN is designed to work out of the box with sensible defaults. Every parameter after the key file accepts the literal value `auto`, and trailing `auto` arguments can be omitted entirely — so `dsvpn server vpn.key` is a fully valid server invocation. This page covers how to override each parameter when you need a custom deployment.
+
+## Full parameter reference
+
+The complete command signatures are:
+
+```text
+dsvpn  "server"
+       <key file>
+       <vpn server ip or name>|"auto"
+       <vpn server port>|"auto"
+       <tun interface>|"auto"
+       <local tun ip>|"auto"
+       <remote tun ip>|"auto"
+       <external ip>|"auto"
+
+dsvpn  "client"
+       <key file>
+       <vpn server ip or name>
+       <vpn server port>|"auto"
+       <tun interface>|"auto"
+       <local tun ip>|"auto"
+       <remote tun ip>|"auto"
+       <gateway ip>|"auto"
+```
+
+All parameters with `|"auto"` can be set to `auto` (or omitted if they are the final arguments) to use the built-in defaults.
+
+## Custom tunnel IP addresses
+
+By default, the tunnel uses `192.168.192.254` as the server-side TUN address and `192.168.192.1` as the client-side TUN address. If either of those ranges conflicts with an existing subnet in your environment, you can override them:
+
+```bash
+# Server with custom tunnel IPs
+sudo ./dsvpn server vpn.key auto 443 auto 10.8.0.1 10.8.0.2
+
+# Client with matching (reversed) tunnel IPs
+sudo ./dsvpn client vpn.key server-ip 443 auto 10.8.0.2 10.8.0.1
+```
+
+<Note>
+  The local and remote tunnel IPs must be the **same pair** on both ends, just swapped. The server's local IP becomes the client's remote IP, and vice versa. In the example above: the server's local is `10.8.0.1` and its remote is `10.8.0.2`; the client's local is `10.8.0.2` and its remote is `10.8.0.1`.
+</Note>
+
+## Custom TUN interface name
+
+On Linux, the TUN interface can be named anything that fits within the system's interface name limit. On macOS, the kernel control socket mechanism requires the interface to follow the `utunN` naming pattern.
+
+```bash
+# Linux — any valid interface name works
+sudo ./dsvpn server vpn.key auto 443 vpn0
+
+# macOS — must be utun0, utun1, utun2, etc.
+sudo ./dsvpn client vpn.key server-ip 443 utun5
+```
+
+Using `auto` for the interface name picks the first available TUN device: on Linux it lets the kernel assign a name (typically `tun0`); on macOS it iterates `utun0` through `utun31` and uses the first one that is not already open.
+
+## Custom listen address (server)
+
+By default the server listens on all interfaces. To bind to a specific IP address — for example, when the host has multiple network cards and you only want to accept VPN connections on one of them — pass the IP as the third argument:
+
+```bash
+sudo ./dsvpn server vpn.key 203.0.113.1 443
+```
+
+<Tip>
+  If the server is behind NAT or a load balancer, set the `<external ip>` parameter (the last server argument) to the server's public IP address. DSVPN uses that value when constructing firewall masquerade rules, so routing on the server side will be correct even when the host does not see its own public address on any interface.
+</Tip>
+
+## Point-to-point mode (`NO_DEFAULT_ROUTES`)
+
+Compiling DSVPN with `-DNO_DEFAULT_ROUTES` instructs it to skip the installation of default routes when a client connects. Only the TUN interface addresses are configured; no policy routing rules, no default-route entries, and no IPv6 blackhole routes are added. This is useful for site-to-site tunnels or selective routing scenarios where you manage the routing table yourself.
+
+```bash
+make OPTFLAGS=-DNO_DEFAULT_ROUTES
+```
+
+After building, use the binary exactly as normal — the `auto` parameters all still work. You are then responsible for adding whichever `ip route` (Linux) or `route add` (macOS/BSD) commands your topology requires.
+
+## IPv6 tunnel addresses
+
+DSVPN automatically derives IPv6 addresses for the tunnel interface using the NAT64 well-known prefix `64:ff9b::`, appended with the IPv4 tunnel addresses. For the default IPs:
+
+- Server TUN IPv6: `64:ff9b::192.168.192.254`
+- Client TUN IPv6: `64:ff9b::192.168.192.1`
+
+These addresses are applied to the TUN interface alongside the IPv4 addresses and are used for the IPv6 default routes added on the client. No manual configuration is needed — the addresses are derived at startup from whatever IPv4 tunnel IPs are in use.
+
+## MTU
+
+The default MTU is **9000** (jumbo frames), which maximises throughput on networks that support large frames. The sole exception is NetBSD, where the default is **1500** due to platform limitations.
+
+If the physical path between client and server has a lower MTU limit, the oversized TUN MTU may cause fragmentation of the outer TCP segments. The MTU is not configurable at runtime; to change it you must edit `DEFAULT_MTU` in `include/vpn.h` and recompile.

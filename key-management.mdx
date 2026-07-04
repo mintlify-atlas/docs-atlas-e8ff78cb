@@ -1,0 +1,110 @@
+---
+title: "Managing DSVPN Shared Keys Securely"
+sidebarTitle: "Key Management"
+description: "DSVPN uses a 32-byte pre-shared key for authentication and session key derivation. Learn how to generate, transfer, and rotate keys."
+---
+
+DSVPN's entire security model rests on a single 32-byte pre-shared key. Any party that possesses this key file can successfully authenticate to the server and tunnel traffic through it. Protecting the key file is equivalent to protecting your VPN itself — treat it with the same care you would give an SSH private key or a root password.
+
+## Generating a Key
+
+Use `dd` to read exactly 32 bytes of cryptographically secure random data from the kernel's `/dev/urandom` device:
+
+```bash
+dd if=/dev/urandom of=vpn.key count=1 bs=32
+```
+
+The `count=1 bs=32` combination guarantees the output is exactly 32 bytes — the size DSVPN requires. Do not use a text password, a truncated hash, or any other source; only `/dev/urandom` (or `/dev/random`) is appropriate here.
+
+<Note>
+  The key file must contain exactly 32 raw bytes. The `dd` command above
+  guarantees this. Do not open or edit the file in a text editor, as most
+  editors will append a newline or alter the binary content.
+</Note>
+
+## Exporting and Importing Keys
+
+The key file is binary, so it cannot be pasted into a terminal directly. Convert it to a Base64 string for safe transport over SSH, a secrets manager, or a chat message:
+
+```bash
+# Export: print the key as a Base64 string
+base64 < vpn.key
+
+# Import: paste the Base64 string to recreate the binary key file
+echo 'HK940OkWcFqSmZXnCQ1w6jhQMZm0fZoEhQOOpzJ/l3w=' | base64 --decode > vpn.key
+```
+
+The Base64 string is safe to copy and paste across terminals. Once imported, verify the file size is exactly 32 bytes:
+
+```bash
+wc -c vpn.key
+# Expected output: 32 vpn.key
+```
+
+## Where to Store the Key
+
+Restrict file permissions immediately after generating the key:
+
+```bash
+chmod 600 vpn.key
+```
+
+Additional recommendations:
+
+- **Keep it out of version control.** Add `vpn.key` to your `.gitignore`. Never commit raw key material to a repository.
+- **Transfer over an encrypted channel.** Use `scp`, `sftp`, or `ssh` piped through a trusted connection — never plain HTTP, email, or unencrypted chat.
+- **Use a secrets manager in production.** Tools such as HashiCorp Vault, AWS Secrets Manager, or 1Password can store the Base64-encoded key and inject it onto the filesystem at deploy time.
+- **Store outside the application directory.** A path like `/etc/dsvpn/vpn.key` with `root:root` ownership and `600` permissions keeps the key away from web roots and application files.
+
+## Key Rotation
+
+DSVPN has no built-in automatic rotation. To rotate the key manually:
+
+<Steps>
+  <Step title="Generate a new key on the server">
+    ```bash
+    dd if=/dev/urandom of=vpn.key.new count=1 bs=32
+    ```
+  </Step>
+  <Step title="Export and copy to all clients">
+    ```bash
+    base64 < vpn.key.new
+    # Securely transfer this string to each client
+    ```
+  </Step>
+  <Step title="Replace the key file on the server">
+    ```bash
+    mv vpn.key.new vpn.key
+    sudo ./dsvpn server vpn.key   # restart the server
+    ```
+  </Step>
+  <Step title="Update each client">
+    ```bash
+    echo 'NEW_BASE64_STRING_HERE' | base64 --decode > vpn.key
+    sudo ./dsvpn client vpn.key <server-ip>
+    ```
+  </Step>
+</Steps>
+
+Clients using the old key will be rejected the moment the server restarts with the new key. There will be a brief disconnection during rotation. Deploy the new key to all clients promptly to minimise downtime.
+
+<Warning>
+  If the key file is compromised — lost, leaked, or accessed by an unauthorised
+  party — regenerate it immediately and redeploy to all endpoints. Any party
+  holding the old key can impersonate a client or decrypt past sessions recorded
+  at the handshake layer.
+</Warning>
+
+## How the Key Is Used
+
+The 32-byte key is never used directly to encrypt traffic. Instead, when DSVPN starts, it calls:
+
+```text
+uc_state_init(uc_kx_st, key, "VPN Key Exchange")
+```
+
+This initialises a [Charm](https://github.com/jedisct1/charm) `uc` state using the raw key as the key material and the fixed string `"VPN Key Exchange"` as the IV. The resulting state is used exclusively during the handshake phase.
+
+During the handshake the client sends 32 random bytes plus an 8-byte big-endian timestamp and a 32-byte hash derived from the `uc_kx_st` state. The server verifies the hash and checks that the client's clock is within **7200 seconds (2 hours)** of its own. After both sides validate the exchange, they each call `uc_hash(st, k, NULL, 0)` to derive a fresh, per-session symmetric key `k`, then initialise two independent `uc_state_init` stream states — one for each direction — using that derived key. The raw 32-byte key is zeroed from memory immediately after the initial state is set up.
+
+This design means that even if network traffic is recorded, it cannot be decrypted without the pre-shared key, and each session uses unique stream keys that are never reused across reconnections.

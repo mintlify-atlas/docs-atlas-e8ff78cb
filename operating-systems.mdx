@@ -1,0 +1,234 @@
+---
+title: "DSVPN Platform Support: Linux, macOS, and BSD"
+sidebarTitle: "Operating Systems"
+description: "DSVPN runs on Linux (kernel 3.17+), macOS, OpenBSD, FreeBSD, DragonFly BSD, and NetBSD. Learn the platform-specific setup steps and limitations."
+---
+
+DSVPN supports several Unix-like operating systems out of the box. Linux and macOS have full server and client support with automatic firewall and routing configuration. BSD variants support client and point-to-point modes, with OpenBSD additionally supporting full server mode.
+
+<Tabs>
+  <Tab title="Linux">
+    ## Linux
+
+    Linux has **full server and client support**, including automatic iptables rules, policy routing, and NAT masquerading.
+
+    **Requirements**
+
+    - Kernel version **3.17 or later**
+    - TUN/TAP support compiled in or loaded as a module (`CONFIG_TUN`)
+    - `iptables` available in `$PATH` (for server mode)
+    - `ip` (iproute2) available in `$PATH`
+
+    **TUN device**
+
+    DSVPN opens `/dev/net/tun` and uses the `TUNSETIFF` ioctl with `IFF_TUN | IFF_NO_PI` to create the interface. If the device node does not exist, load the kernel module first:
+
+    ```bash
+    sudo modprobe tun
+    ```
+
+    **Interface naming**
+
+    On Linux any valid interface name is accepted (e.g., `tun0`, `vpn0`, `myvpn`). Using `auto` lets the kernel assign the next available name.
+
+    **Automatic firewall and routing (server)**
+
+    When running as a server, DSVPN executes the following commands automatically:
+
+    ```bash
+    sysctl net.ipv4.ip_forward=1
+    ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME
+    ip -6 addr add $LOCAL_TUN_IP6 peer $REMOTE_TUN_IP6/96 dev $IF_NAME
+    ip link set dev $IF_NAME up
+    iptables -t raw -I PREROUTING ! -i $IF_NAME -d $LOCAL_TUN_IP -m addrtype ! --src-type LOCAL -j DROP
+    iptables -t nat -A POSTROUTING -o $EXT_IF_NAME -s $REMOTE_TUN_IP -j MASQUERADE
+    iptables -t filter -A FORWARD -i $EXT_IF_NAME -o $IF_NAME -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -t filter -A FORWARD -i $IF_NAME -o $EXT_IF_NAME -j ACCEPT
+    ```
+
+    **Automatic firewall and routing (client)**
+
+    On the client side, DSVPN uses policy routing table `42069` and marks the VPN TCP socket with `SO_MARK=42069` to avoid routing loops:
+
+    ```bash
+    sysctl net.ipv4.tcp_congestion_control=bbr
+    ip link set dev $IF_NAME up
+    iptables -t raw -I PREROUTING ! -i $IF_NAME -d $LOCAL_TUN_IP -m addrtype ! --src-type LOCAL -j DROP
+    ip addr add $LOCAL_TUN_IP peer $REMOTE_TUN_IP dev $IF_NAME
+    ip -6 addr add $LOCAL_TUN_IP6 peer $REMOTE_TUN_IP6/96 dev $IF_NAME
+    ip route add default dev $IF_NAME table 42069
+    ip -6 route add default dev $IF_NAME table 42069
+    ip rule add not fwmark 42069 table 42069
+    ip -6 rule add not fwmark 42069 table 42069
+    ip rule add table main suppress_prefixlength 0
+    ip -6 rule add table main suppress_prefixlength 0
+    ```
+
+    All rules are automatically removed when DSVPN exits.
+  </Tab>
+
+  <Tab title="macOS">
+    ## macOS
+
+    macOS has **full server and client support**. Routing is handled via `ifconfig` and `route` commands; there is no iptables.
+
+    **Installation**
+
+    ```bash
+    # Via Homebrew (recommended)
+    brew install dsvpn
+
+    # Or build from source (requires Xcode Command Line Tools)
+    make
+    ```
+
+    **TUN device**
+
+    On macOS, DSVPN creates the TUN interface using a kernel control socket via `UTUN_CONTROL_NAME` (`com.apple.net.utun_control`). No `/dev/tun` node is needed — this is handled entirely through the `PF_SYSTEM` socket API.
+
+    **Interface naming**
+
+    The interface name **must** follow the `utunN` pattern (e.g., `utun0`, `utun1`, `utun3`). Providing any other name will cause an `EINVAL` error. Using `auto` iterates from `utun0` to `utun31` and picks the first one available.
+
+    **Automatic firewall and routing (server)**
+
+    ```bash
+    sysctl -w net.inet.ip.forwarding=1
+    ifconfig $IF_NAME $LOCAL_TUN_IP $REMOTE_TUN_IP up
+    ifconfig $IF_NAME inet6 $LOCAL_TUN_IP6 $REMOTE_TUN_IP6 prefixlen 128 up
+    ```
+
+    Note that on macOS, NAT masquerading is not configured automatically by DSVPN. You will need to configure `pf` manually for server-mode NAT if required.
+
+    **Automatic routing (client)**
+
+    The client uses the split `/1` route trick to override the default route without replacing it:
+
+    ```bash
+    ifconfig $IF_NAME $LOCAL_TUN_IP $REMOTE_TUN_IP up
+    ifconfig $IF_NAME inet6 $LOCAL_TUN_IP6 $REMOTE_TUN_IP6 prefixlen 128 up
+    route add $EXT_IP $EXT_GW_IP
+    route add 0/1 $REMOTE_TUN_IP
+    route add 128/1 $REMOTE_TUN_IP
+    route add -inet6 -blackhole 0000::/1 $REMOTE_TUN_IP6
+    route add -inet6 -blackhole 8000::/1 $REMOTE_TUN_IP6
+    ```
+
+    IPv6 blackhole routes prevent IPv6 traffic from leaking outside the tunnel. All routes are cleaned up on disconnect.
+  </Tab>
+
+  <Tab title="OpenBSD">
+    ## OpenBSD
+
+    OpenBSD has **full server and client support**. It is the only BSD platform for which DSVPN configures full server-mode routing automatically.
+
+    **TUN device**
+
+    DSVPN opens `/dev/tunN` (e.g., `/dev/tun0`) directly. The device files must exist; they are typically present by default on OpenBSD.
+
+    **Privilege restriction with `pledge(2)`**
+
+    After the TUN interface and TCP socket are set up, DSVPN calls `pledge(2)` to restrict itself to the following capabilities only:
+
+    ```text
+    stdio proc exec dns inet
+    ```
+
+    This means that after startup, the process cannot open new files, access the filesystem arbitrarily, or perform most system calls — significantly reducing the attack surface if the process is compromised.
+
+    **Required `pf` rule (server mode)**
+
+    After starting DSVPN in server mode on OpenBSD, the program prints a rule that you must add to `/etc/pf.conf` for NAT to work. For the default tunnel IPs it looks like:
+
+    ```text
+    pass out from 192.168.192.1 nat-to egress
+    ```
+
+    Replace `192.168.192.1` with your actual remote tunnel IP if you used custom addresses. After editing the file, reload pf:
+
+    ```bash
+    sudo pfctl -f /etc/pf.conf
+    ```
+
+    **Client routing**
+
+    The client uses the same `ifconfig` and `route` commands as macOS (see the macOS tab), since both share the BSD routing model.
+  </Tab>
+
+  <Tab title="FreeBSD / DragonFly BSD">
+    ## FreeBSD and DragonFly BSD
+
+    FreeBSD and DragonFly BSD support **client and point-to-point modes**. Full automatic server-side NAT is not configured by DSVPN on these platforms.
+
+    **TUN device**
+
+    DSVPN opens `/dev/tunN` files (e.g., `/dev/tun0`). The TUN device must be available; on FreeBSD load the module if needed:
+
+    ```bash
+    sudo kldload if_tun
+    ```
+
+    **Client routing**
+
+    Client-side routing uses the same `ifconfig` and `route add` commands as macOS and OpenBSD:
+
+    ```bash
+    ifconfig $IF_NAME $LOCAL_TUN_IP $REMOTE_TUN_IP up
+    ifconfig $IF_NAME inet6 $LOCAL_TUN_IP6 $REMOTE_TUN_IP6 prefixlen 128 up
+    route add $EXT_IP $EXT_GW_IP
+    route add 0/1 $REMOTE_TUN_IP
+    route add 128/1 $REMOTE_TUN_IP
+    route add -inet6 -blackhole 0000::/1 $REMOTE_TUN_IP6
+    route add -inet6 -blackhole 8000::/1 $REMOTE_TUN_IP6
+    ```
+
+    **Server-side NAT**
+
+    Unlike Linux, DSVPN does not automatically configure MASQUERADE/NAT on FreeBSD or DragonFly BSD when running as a server. You must set up NAT manually using `pf` or `ipfw`. The TUN interface addresses are configured automatically; only the NAT rule must be added by hand.
+
+    <Note>
+      For simple point-to-point use cases where full NAT is not required, compile with `-DNO_DEFAULT_ROUTES` and manage routing manually. See [Advanced Configuration](/advanced-configuration) for details.
+    </Note>
+  </Tab>
+
+  <Tab title="NetBSD">
+    ## NetBSD
+
+    NetBSD supports **client and point-to-point modes**. Support is limited compared to Linux and macOS.
+
+    **TUN device**
+
+    DSVPN opens `/dev/tunN` files (e.g., `/dev/tun0`), the same as other BSD platforms.
+
+    **MTU difference**
+
+    On NetBSD, the default MTU is **1500** instead of the usual 9000 (jumbo frames). This is a compile-time constant (`DEFAULT_MTU`) set specifically for NetBSD due to platform limitations. The reduced MTU means larger inner packets will be fragmented at the TUN layer.
+
+    **Client routing**
+
+    Client routing uses the same BSD `ifconfig` and `route` commands as macOS, OpenBSD, and FreeBSD.
+
+    **Limitations**
+
+    NetBSD support is limited. Automatic server-side NAT is not configured. For anything beyond point-to-point tunnels, routing must be managed manually.
+
+    <Note>
+      Use the `NO_DEFAULT_ROUTES` compile flag on NetBSD if you want to manage routes entirely yourself, which is recommended for site-to-site configurations on this platform.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Adding support for other platforms
+
+As the DSVPN README notes: *"Adding support for other operating systems is trivial."*
+
+All platform-specific code is isolated in `src/os.c`. The two functions to implement are:
+
+- **`tun_create()`** — opens or creates the TUN device and returns a file descriptor. Each platform's TUN interface has a different device path or socket API, but the interface is a simple `int fd` in every case.
+- **`firewall_rules_cmds()`** — returns two arrays of shell command strings (set and unset) that configure the interface addresses and routing. The strings use substitution tokens such as `$IF_NAME`, `$LOCAL_TUN_IP`, and `$REMOTE_TUN_IP` that DSVPN fills in at runtime.
+
+No changes to the core VPN logic in `src/vpn.c` are needed for a new platform.
+
+<Note>
+  On any BSD platform without full automatic routing support, compile with `-DNO_DEFAULT_ROUTES` to put DSVPN into point-to-point mode. The TUN interface addresses will still be configured automatically; you can then add whatever routing rules your network topology requires without conflicting with DSVPN's teardown logic.
+</Note>

@@ -1,0 +1,169 @@
+---
+title: "DSVPN Security Model and Threat Analysis"
+sidebarTitle: "Security"
+description: "DSVPN's security relies on a 32-byte pre-shared key. Understand the threat model, what DSVPN protects against, and its known limitations."
+---
+
+DSVPN provides encrypted, authenticated tunneling based on a 32-byte pre-shared key. This page documents what DSVPN protects against, what it doesn't, and the security properties of its design. Understanding the model clearly is essential before deploying DSVPN in any environment.
+
+## Threat Model
+
+DSVPN is designed for a specific, well-defined use case: routing traffic from a client device through a trusted server over an untrusted network. Within that scope, the following security properties hold when the pre-shared key remains confidential.
+
+**Confidentiality**
+
+All traffic sent over the tunnel is encrypted with the Charm AEAD stream cipher. An attacker observing the TCP stream sees only ciphertext of fixed overhead (2-byte length + 6-byte tag per packet).
+
+**Authentication**
+
+Both endpoints must possess the shared key to complete the handshake. The server verifies the client's hash before accepting a connection, and the client verifies the server's hash before sending any data. A party without the key cannot complete the key exchange.
+
+**Integrity**
+
+Every packet carries a 6-byte authentication tag computed by the Charm cipher. Any modification to the ciphertext or tag causes `uc_decrypt` to return a non-zero error code, which DSVPN treats as a `"Corrupted stream"` event and responds to by tearing down the connection and reconnecting.
+
+**Anti-Replay**
+
+Replay protection operates at two levels:
+
+- The 8-byte timestamp in the client's handshake challenge prevents replay of captured handshake packets outside the `TS_TOLERANCE = 7200` second (2-hour) window.
+- The Charm stream cipher state advances monotonically per packet. A replayed packet decrypts to incorrect plaintext and fails tag verification.
+
+**IPv6 Leak Prevention**
+
+DSVPN explicitly blocks IPv6 routing on the client side when the tunnel is active. This prevents IPv6 traffic from bypassing the VPN through the default interface while IPv4 traffic is tunneled.
+
+## What DSVPN Does NOT Provide
+
+<Warning>
+  Understanding these limitations is as important as understanding what DSVPN does provide. Deploying DSVPN under assumptions it cannot support introduces real risk.
+</Warning>
+
+**No Perfect Forward Secrecy (PFS)**
+
+Session keys are derived from the static shared key via `uc_hash`. If the key file is compromised, an attacker who recorded past sessions can decrypt them. There is no ephemeral Diffie-Hellman or similar mechanism to protect historical traffic.
+
+**No Certificate Infrastructure**
+
+DSVPN uses a single shared secret for all clients. There is no per-user identity, no certificate chain, no revocation mechanism. Every party that holds the key is indistinguishable from any other.
+
+**No Multi-Peer Support**
+
+The server maintains one active session at a time. A second connection attempt from a different IP address while a session is active is rejected with `"a session from [ip] is already active"`.
+
+**No Access Control Beyond Key Possession**
+
+Once a client authenticates, all of its traffic is forwarded without further inspection or filtering. There are no ACLs, no split-tunnel policies, and no per-user bandwidth or destination rules.
+
+**No Anonymity**
+
+The server records and logs the client's IP address. DSVPN shifts the point at which your IP is visible (from the destination server to the VPN server), but does not hide it from the VPN server operator.
+
+## Operating System Hardening
+
+DSVPN applies platform-specific sandboxing where available.
+
+**OpenBSD — `pledge(2)`**
+
+After the TUN interface is created, DSVPN drops capabilities using OpenBSD's `pledge(2)` system call:
+
+```c
+pledge("stdio proc exec dns inet", NULL);
+```
+
+This restricts the process to standard I/O, process management (for firewall rule execution), DNS resolution, and network I/O. Any attempt to open files, access the filesystem, or perform other operations not in the pledge set causes an immediate process termination by the kernel.
+
+**Other platforms**
+
+On Linux, macOS, FreeBSD, NetBSD, and DragonFly BSD, no equivalent sandbox is applied after startup. The process runs with the privileges it was launched with (typically root, for TUN device creation).
+
+## Attack Surface
+
+DSVPN is deliberately minimal to keep the auditable surface area small.
+
+- **Binary size**: approximately 25 KB stripped
+- **No heap allocations**: `Buf` and `Context` structs are stack-allocated in `main()`, eliminating heap-spray, use-after-free, and double-free attack vectors
+- **No external dependencies**: no OpenSSL, no libsodium, no protocol parsers beyond simple length-prefixed framing
+- **No configuration file parser**: all parameters are positional command-line arguments
+- **Compiler hardening**: built with `-Wall -W -Wshadow -Wmissing-prototypes -O3 -march=native`
+- **CodeQL analysis**: static analysis scans run automatically in CI on every commit
+
+The codebase consists of a small number of C source files. The platform-specific surface area — TUN device creation and firewall rule generation — is isolated in `src/os.c`.
+
+## Pre-Shared Key Security
+
+The 32-byte key file is the single secret protecting the tunnel. Its confidentiality is the foundation of every security property described above.
+
+<Warning>
+  Any party in possession of the key file can authenticate as a valid client and send arbitrary traffic through the server. Treat the key with the same care as a root password.
+</Warning>
+
+**Generating a key**
+
+```bash
+dd if=/dev/urandom of=vpn.key count=1 bs=32
+```
+
+**Restricting access**
+
+```bash
+chmod 600 vpn.key
+```
+
+The key file should be readable only by root (or the user running DSVPN). Verify with `ls -la vpn.key`.
+
+**Transferring the key**
+
+Only transfer the key over an already-encrypted channel:
+
+```bash
+scp vpn.key user@server:/path/to/vpn.key
+```
+
+Never send the key over unencrypted email, chat, or HTTP.
+
+**Key rotation**
+
+Rotate the key regularly and immediately upon any suspected compromise. Key rotation requires:
+
+1. Generating a new key on one endpoint
+2. Securely transferring it to the other endpoint
+3. Restarting DSVPN on both ends simultaneously (or within the handshake retry window)
+
+There is no mechanism to rotate keys without a brief connectivity interruption.
+
+**Exporting and importing in printable form**
+
+```bash
+# Export
+base64 < vpn.key
+
+# Import
+echo 'HK940OkWcFqSmZXnCQ1w6jhQMZm0fZoEhQOOpzJ/l3w=' | base64 --decode > vpn.key
+```
+
+## Signal Handling and Clean Shutdown
+
+DSVPN installs handlers for `SIGINT` and `SIGTERM` that set a `volatile sig_atomic_t exit_signal_received` flag:
+
+```c
+static void signal_handler(int sig)
+{
+    signal(sig, SIG_DFL);
+    exit_signal_received = 1;
+}
+```
+
+The main event loop checks this flag on each iteration. When set, the loop exits cleanly, firewall rules are torn down, and the process exits. Pressing `Ctrl-C` triggers this path.
+
+On unclean disconnects (network failure, authentication error), the client attempts to reconnect up to `RECONNECT_ATTEMPTS = 100` times with a backoff of up to 3 seconds between attempts before giving up.
+
+## No Guarantees
+
+DSVPN's author is explicit about the project's scope and support posture. From the README:
+
+> "Guarantees, support, feature additions — None. This is what I use, because it solves a problem I had."
+
+<Warning>
+  DSVPN has not been audited by an independent security firm. The codebase is small and readable — review `src/vpn.c`, `src/charm.c`, and `include/charm.h` yourself before deploying in high-security environments. For use cases requiring formal audit, PFS, or per-user identity, consider WireGuard or a properly configured OpenVPN deployment.
+</Warning>

@@ -1,0 +1,143 @@
+---
+title: "Connecting to DSVPN from a Client Device"
+sidebarTitle: "Client Setup"
+description: "Connect a client to a DSVPN server using a shared key. Covers Linux, macOS, and BSD, with automatic routing, reconnection, and IPv6 leak prevention."
+---
+
+The DSVPN client establishes an encrypted TCP connection to the server, then sets up a TUN interface and routing rules so that all traffic from the device is tunnelled through the server. Like the server, the client applies and removes all network configuration automatically — no manual routing or firewall commands required.
+
+## Connecting
+
+```bash
+sudo ./dsvpn client vpn.key 34.216.127.34 1959
+```
+
+Replace `34.216.127.34` with the public IP address or hostname of your DSVPN server, and `1959` with the port it is listening on. The port argument is optional when the server uses the default port 443:
+
+```bash
+sudo ./dsvpn client vpn.key my-server.example.com
+```
+
+Once connected, DSVPN prints `Connected` and all traffic from the device is routed through the VPN. Press `Ctrl-C` to disconnect.
+
+## What Happens on Connect
+
+After the TCP connection and cryptographic handshake succeed, DSVPN performs all routing setup automatically. The exact commands depend on the operating system.
+
+<Tabs>
+  <Tab title="Linux">
+    DSVPN sets up a **policy routing** scheme on Linux that avoids routing loops. The VPN's own TCP socket is excluded from the policy table using a socket mark, so tunnelled traffic never recursively re-enters the VPN.
+
+    **TUN interface**
+    ```bash
+    ip link set dev <tun> up
+    ip addr add 192.168.192.1 peer 192.168.192.254 dev <tun>
+    ip -6 addr add 64:ff9b::192.168.192.1 peer 64:ff9b::192.168.192.254/96 dev <tun>
+    ```
+
+    **BBR congestion control** — enabled on the outer TCP socket for better performance:
+    ```bash
+    sysctl net.ipv4.tcp_congestion_control=bbr
+    ```
+
+    **Policy routing table 42069** — all unmarked traffic uses a separate routing table that sends everything through the TUN:
+    ```bash
+    ip route add default via 192.168.192.254 table 42069
+    ip rule add not fwmark 42069 lookup 42069
+    ip rule add fwmark 42069 lookup main suppress_prefixlength 0
+    ```
+
+    The VPN's own TCP socket to the server is marked with `SO_MARK=42069`, so it looks up the main routing table and reaches the server directly — preventing a routing loop.
+
+    **Anti-spoof protection**
+    ```bash
+    iptables -t nat -I PREROUTING -d <local-tun-ip> ! -i <tun> -j DROP
+    ```
+  </Tab>
+  <Tab title="macOS / BSD">
+    On macOS and BSD, DSVPN uses **split default routes** to tunnel all traffic while keeping the VPN connection itself on the original gateway.
+
+    **TUN interface**
+    ```bash
+    ifconfig <tun> 192.168.192.1 192.168.192.254 up
+    ```
+
+    **Server route via original gateway** — ensures the VPN TCP connection bypasses the tunnel:
+    ```bash
+    route add <server-ip> <original-gateway-ip>
+    ```
+
+    **Split default routes** — covering the entire address space in two halves routes all traffic through the TUN without replacing the `0.0.0.0/0` default route:
+    ```bash
+    route add 0.0.0.0/1   192.168.192.254
+    route add 128.0.0.0/1 192.168.192.254
+    ```
+
+    **IPv6 blackhole routes** — prevent IPv6 traffic from leaking outside the VPN:
+    ```bash
+    route add -inet6 0000::/1   -blackhole
+    route add -inet6 8000::/1   -blackhole
+    ```
+  </Tab>
+</Tabs>
+
+## Automatic Reconnection
+
+The DSVPN client reconnects automatically if the connection drops — for example, when a laptop wakes from sleep, switches between Wi-Fi networks, or loses connectivity briefly.
+
+- The client retries up to **100 times** (`RECONNECT_ATTEMPTS`).
+- Backoff delay between attempts: **0 s, 1 s, 2 s, 3 s, then 3 s** for all subsequent attempts.
+- If the default network gateway IP changes between reconnect attempts (e.g., the device joined a different network), DSVPN detects the change, tears down the old routing rules, updates the gateway, and re-applies the rules before reattempting the connection.
+- If all 100 attempts fail, DSVPN exits with an error. Restart it manually or via a process supervisor.
+
+The server never attempts to reconnect — it simply waits for the next incoming TCP connection.
+
+## IPv6 Leak Prevention
+
+IPv6 leaks are a common VPN pitfall: when a device has a working IPv6 address, OS resolvers or applications may send traffic via IPv6, bypassing the VPN tunnel entirely.
+
+DSVPN addresses this automatically:
+
+- **macOS/BSD**: adds blackhole routes for `0000::/1` and `8000::/1`, which together cover the entire IPv6 address space. Any IPv6 traffic is silently discarded rather than sent outside the tunnel.
+- **Linux**: routes IPv6 through the TUN interface using the NAT64-prefix tunnel addresses (`64:ff9b::<ipv4>`).
+
+No manual configuration is needed. IPv6 connectivity is blocked for the duration of the VPN session and restored when DSVPN exits.
+
+## Disconnecting
+
+Press `Ctrl-C` or send `SIGTERM` to the DSVPN process:
+
+```bash
+sudo kill -TERM <dsvpn-pid>
+```
+
+DSVPN removes all routing rules and TUN interface configuration it applied, restoring the network to its original state. The disconnect is clean regardless of whether the server is still reachable.
+
+## iOS Client
+
+An iOS client for DSVPN is available as a separate project:
+
+<Card title="dsvpn-ios" icon="mobile" href="https://github.com/jedisct1/dsvpn-ios">
+  Native iOS client for DSVPN. Uses the same shared-key authentication and connects to any standard DSVPN server.
+</Card>
+
+<Warning>
+  DNS may continue using the pre-VPN resolver after connecting. If your VPN
+  server is meant to provide DNS privacy, configure your system DNS to use a
+  public or local resolver (such as `1.1.1.1`, `8.8.8.8`, or a local
+  DNSCrypt proxy) in addition to running DSVPN. DSVPN does not redirect DNS
+  queries automatically.
+</Warning>
+
+<Note>
+  The client detects its default gateway automatically using the system routing
+  table. If auto-detection fails (rare on unusual network setups), specify the
+  gateway IP explicitly as the last argument:
+
+  ```bash
+  sudo ./dsvpn client vpn.key my-server.example.com 443 auto auto auto 192.168.1.1
+  ```
+
+  The gateway IP is the address of your local router — the first hop shown by
+  `netstat -rn` (look for the `Gateway` column on the default `0.0.0.0` route).
+</Note>

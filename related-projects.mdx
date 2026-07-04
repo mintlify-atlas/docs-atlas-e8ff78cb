@@ -1,0 +1,123 @@
+---
+title: "DSVPN Ecosystem: Clients, Integrations, and Alternatives"
+sidebarTitle: "Related Projects"
+description: "Explore the DSVPN ecosystem including iOS client, Docker image, Ansible role, OpenWrt support, and comparisons to WireGuard, OpenVPN, and GloryTun."
+---
+
+DSVPN has a small but active ecosystem of community-maintained integrations, service configurations, and platform ports. This page lists official and community resources and explains how DSVPN compares to similar tools. Whether you are deploying on a headless server, a router, or an iPhone, chances are someone has already done the legwork.
+
+## Official Projects
+
+These projects are maintained by the DSVPN author.
+
+<CardGroup cols={2}>
+  <Card
+    title="dsvpn-ios"
+    icon="mobile"
+    href="https://github.com/jedisct1/dsvpn-ios"
+  >
+    iOS client for DSVPN. Connect your iPhone or iPad to a DSVPN server using the same 32-byte pre-shared key.
+  </Card>
+  <Card
+    title="Charm"
+    icon="lock"
+    href="https://github.com/jedisct1/charm"
+  >
+    The standalone cryptography library embedded in DSVPN. Provides the Xoodoo-based AEAD stream cipher, hashing, and secure memory utilities used for all encryption.
+  </Card>
+</CardGroup>
+
+## Community Integrations
+
+These projects are maintained by third-party contributors and are not part of the official DSVPN repository.
+
+<CardGroup cols={2}>
+  <Card
+    title="systemd Service Files"
+    icon="gear"
+    href="https://github.com/ebal/scripts/tree/master/dsvpn"
+  >
+    Systemd unit files for running DSVPN as a managed service on Linux, maintained by Evaggelos Balaskas. Includes both server and client units.
+  </Card>
+  <Card
+    title="Ansible Role"
+    icon="server"
+    href="https://github.com/robertdebock/ansible-role-dsvpn"
+  >
+    An Ansible role for automated DSVPN deployment, maintained by Robert Debock. Handles installation, key management, and service configuration.
+  </Card>
+  <Card
+    title="Docker Image"
+    icon="box"
+    href="https://github.com/cofyc/dsvpn-docker"
+  >
+    A Docker image for DSVPN maintained by Yecheng Fu. Run DSVPN server or client inside a container without installing it on the host system.
+  </Card>
+  <Card
+    title="OpenMPTCProuter"
+    icon="wifi"
+    href="http://www.openmptcprouter.com/"
+  >
+    An OpenWrt-based router operating system with built-in DSVPN support. Enables VPN tunneling directly from your router hardware.
+  </Card>
+</CardGroup>
+
+## Blog Posts and Tutorials
+
+Evaggelos Balaskas wrote a detailed walkthrough of setting up DSVPN from scratch: [**A Dead Simple VPN**](https://balaskas.gr/blog/2019/07/20/a-dead-simple-vpn/) (July 2019). The post walks through the whole procedure — compiling, generating the key, running the server, connecting the client, and verifying traffic flows through the tunnel. It is the most complete step-by-step guide available for first-time DSVPN users.
+
+## Why Not WireGuard / OpenVPN / sshuttle?
+
+DSVPN exists because of specific limitations in the alternatives. Understanding those trade-offs helps you decide whether DSVPN is the right tool for your situation.
+
+<AccordionGroup>
+  <Accordion title="WireGuard">
+    WireGuard is an excellent VPN with a clean, audited codebase and strong cryptography. However, WireGuard operates exclusively over UDP. In environments where only TCP/80 or TCP/443 is open or reliable — public WiFi hotspots, corporate firewalls, or restrictive ISPs — WireGuard simply will not work.
+
+    DSVPN's primary advantage over WireGuard is TCP transport. If you can reach your server over TCP/443, DSVPN works. WireGuard does not.
+
+    If your network reliably passes UDP, WireGuard is likely the better choice for long-term deployments due to its formal audit and kernel integration.
+  </Accordion>
+
+  <Accordion title="OpenVPN">
+    OpenVPN supports TCP transport and is battle-tested, but its setup complexity is significant. A production-grade OpenVPN deployment involves generating a PKI, signing certificates, writing a configuration file, and tuning cipher suites and TLS parameters. Getting it wrong is easy; getting it right takes time.
+
+    DSVPN requires no configuration file and no post-setup steps. A single command on the server and a single command on the client is the entire setup process.
+  </Accordion>
+
+  <Accordion title="sshuttle">
+    sshuttle is a clever TCP-over-SSH proxy that is easy to use and requires no server-side daemon beyond sshd. It is not, however, a true VPN. sshuttle cannot tunnel non-TCP traffic (UDP, ICMP, etc.), which means DNS leaks are possible and some applications will not work correctly.
+
+    sshuttle also requires a full Python installation on the client, which is undesirable on embedded routers or minimal systems. DSVPN is a single self-contained C binary with no runtime dependencies.
+  </Accordion>
+
+  <Accordion title="GloryTun">
+    [GloryTun](https://github.com/angt/glorytun) is an excellent VPN with good cryptography and performance. Like WireGuard, the actively maintained branch uses UDP rather than TCP, which limits its usefulness in TCP-only environments. It also requires post-connection configuration steps that DSVPN deliberately avoids.
+  </Accordion>
+
+  <Accordion title="VTUN-libsodium">
+    VTUN with libsodium provides strong cryptography but carries significantly more complexity than DSVPN — more configuration surface, more code paths, and more potential for misconfiguration. For the simple use case of routing one client through one server, the added complexity is unnecessary attack surface.
+  </Accordion>
+</AccordionGroup>
+
+## Contributing and Extending
+
+DSVPN does not accept feature requests for new use cases. From the README:
+
+> "Extending it to solve different problems is not planned, but feel free to fork it and tailor it to your needs!"
+
+That said, adding support for a new operating system is intentionally straightforward. All platform-specific code is isolated in `src/os.c`, which implements two functions:
+
+```c
+/* Create and configure the TUN interface, return its file descriptor */
+int tun_create(char if_name[IFNAMSIZ], const char *wanted_name);
+
+/* Return the shell commands needed to set/unset firewall and routing rules */
+FirewallRules firewall_rules_cmds(int is_server);
+```
+
+Implementing these two functions for a new OS is all that is required to port DSVPN to that platform. Linux, macOS, OpenBSD, FreeBSD, NetBSD, and DragonFly BSD implementations already exist as reference.
+
+<Note>
+  DSVPN is intentionally scope-limited. Feature additions for different use cases are not planned. Fork the project to tailor it to your needs, and consider contributing OS ports back upstream if they are clean and self-contained.
+</Note>

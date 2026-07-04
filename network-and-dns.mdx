@@ -1,0 +1,109 @@
+---
+title: "Network Behavior and DNS with DSVPN"
+sidebarTitle: "Network & DNS"
+description: "How DSVPN routes traffic on Linux and macOS, handles DNS after connecting, prevents IPv6 leaks, and avoids TCP-over-TCP performance issues."
+---
+
+DSVPN takes over the default route when a client connects, routing all traffic through the VPN tunnel. This page explains the routing mechanics on Linux and macOS/BSD, how to handle DNS after connecting, and how DSVPN mitigates the well-known TCP-over-TCP performance penalty.
+
+## How routing works on Linux
+
+On Linux, DSVPN uses **policy routing** rather than replacing the main routing table's default route. When a client connects, the following rules are installed:
+
+```bash
+# Create routing table 42069 with a default route through the TUN device
+ip route add default dev $IF_NAME table 42069
+ip -6 route add default dev $IF_NAME table 42069
+
+# Route all packets not already marked 42069 through table 42069
+ip rule add not fwmark 42069 table 42069
+ip -6 rule add not fwmark 42069 table 42069
+
+# Suppress the main table's default route (prefix length 0) so that
+# only more-specific routes in main are still honoured
+ip rule add table main suppress_prefixlength 0
+ip -6 rule add table main suppress_prefixlength 0
+```
+
+The VPN's own TCP socket is marked with `SO_MARK=42069` (set via `setsockopt` with `SO_MARK`). Because the fwmark rule only applies to packets that are *not* already marked `42069`, the VPN socket's traffic is exempt from table 42069 and continues to use the main routing table — which still has the original route to the VPN server. This prevents a routing loop where VPN traffic would try to route through itself.
+
+All other traffic on the system has no mark, so it hits table 42069 and is forwarded through the TUN interface.
+
+## How routing works on macOS and BSD
+
+On macOS and other BSD systems, DSVPN uses the **split default route** trick instead of policy routing (which those platforms do not support in the same way). When the client connects, it adds:
+
+```bash
+# Preserve the existing path to the VPN server via the original gateway
+route add $EXT_IP $EXT_GW_IP
+
+# Cover the entire IPv4 space with two /1 routes through the TUN interface
+route add 0/1 $REMOTE_TUN_IP
+route add 128/1 $REMOTE_TUN_IP
+
+# IPv6: blackhole routes for the full address space
+route add -inet6 -blackhole 0000::/1 $REMOTE_TUN_IP6
+route add -inet6 -blackhole 8000::/1 $REMOTE_TUN_IP6
+```
+
+The two `/1` routes (`0.0.0.0/1` and `128.0.0.0/1`) together cover every IPv4 destination and are more specific than the system's existing `0.0.0.0/0` default route. The kernel therefore prefers them for all traffic except the explicit host route to the VPN server, which uses the original gateway. The VPN server route is kept in place so that the outer TCP connection can still reach the server without looping through the tunnel.
+
+## DNS after connecting
+
+DSVPN does **not** change your DNS settings. When the client connects and the default route changes, any DNS resolver that is only reachable on your local network (for example a home router at `192.168.1.1`) will become unreachable through the VPN. DNS queries themselves travel through the encrypted tunnel, but the resolver endpoint must be publicly accessible.
+
+Common solutions:
+
+- **Use a public resolver** — `1.1.1.1` (Cloudflare), `8.8.8.8` (Google), or `9.9.9.9` (Quad9)
+- **Run a local resolver** — Unbound or systemd-resolved running on `127.0.0.1` will always be reachable regardless of routing changes
+- **Use DNSCrypt** — encrypts DNS queries and routes them over HTTPS or DNSCrypt protocol
+- **Manually update `/etc/resolv.conf`** or your operating system's DNS settings before or after connecting
+
+<Warning>
+  After connecting, test DNS resolution immediately. If it fails, configure a public DNS server:
+
+  ```bash
+  echo 'nameserver 1.1.1.1' | sudo tee /etc/resolv.conf
+  ```
+
+  Remember to restore your original `/etc/resolv.conf` after disconnecting if you made a manual change.
+</Warning>
+
+<Note>
+  DNS queries themselves travel through the VPN tunnel and are therefore encrypted in transit. The concern is only about *reachability* of the resolver, not privacy of the queries.
+</Note>
+
+## IPv6 leak prevention
+
+DSVPN actively prevents IPv6 traffic from bypassing the tunnel:
+
+- **Linux**: An IPv6 default route is added through the TUN interface (via routing table 42069), so all IPv6 traffic also goes through the VPN.
+- **macOS / BSD**: Blackhole routes are installed for `0000::/1` and `8000::/1`, which together cover the entire IPv6 address space. Any IPv6 packet that cannot be tunneled (e.g., when the tunnel is down) is silently dropped instead of leaking through the physical interface.
+
+This ensures that neither reconnect gaps nor IPv6 fallback can expose the client's real IP address.
+
+## TCP-over-TCP performance
+
+DSVPN tunnels over TCP (rather than UDP as WireGuard does). Tunneling TCP inside TCP has a known pathological failure mode: if the inner TCP connection experiences loss, both the inner and outer TCP stacks retransmit independently, which can lead to exponential backoff and severe throughput collapse.
+
+DSVPN mitigates this with several techniques applied to the outer TCP connection:
+
+- **`TCP_NOTSENT_LOWAT = 128 KB`** — limits how much unsent data can accumulate in the kernel send buffer, reducing bufferbloat and ensuring the inner congestion controller sees timely feedback.
+- **Packet dropping on congestion** — when the outer layer signals congestion, DSVPN drops inner packets rather than buffering them indefinitely, allowing the inner TCP stack to detect loss and back off naturally.
+- **BBR congestion control** (`TCP_CONGESTION = "bbr"`) — set on the outer TCP socket on Linux. BBR uses bandwidth and RTT estimates rather than packet loss as its primary signal, which makes it significantly more robust for tunneled traffic.
+- **`TCP_NODELAY` and `TCP_QUICKACK`** — disable Nagle's algorithm and delayed ACKs on the outer connection to reduce per-packet latency.
+- **`TCP_USER_TIMEOUT = 60 000 ms`** — if the connection goes silent for 60 seconds, the socket is considered dead and the client reconnects, rather than hanging indefinitely.
+
+As the README states:
+
+> "TCP-over-TCP is not as bad as some documents describe. It works surprisingly well in practice, especially with modern congestion control algorithms (BBR)."
+
+<Tip>
+  On Linux, DSVPN also sets BBR system-wide on the client before connecting:
+
+  ```bash
+  sysctl net.ipv4.tcp_congestion_control=bbr
+  ```
+
+  This improves performance for all TCP connections on the client, not just the VPN tunnel itself.
+</Tip>

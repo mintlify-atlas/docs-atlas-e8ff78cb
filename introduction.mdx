@@ -1,0 +1,66 @@
+---
+title: "DSVPN: Dead Simple VPN for Restricted Networks"
+sidebarTitle: "Introduction"
+description: "DSVPN is a minimal VPN that routes all traffic over TCP with no config files, formally verified cryptography, and automatic firewall management."
+---
+
+DSVPN (Dead Simple VPN) is a lightweight, single-binary VPN designed to solve one specific problem: getting reliable, encrypted internet access when you are on a network that blocks everything except TCP. Whether you are on a restrictive corporate WiFi, a hotel network, or any environment where only port 443 is reliably open, DSVPN creates a fully encrypted tunnel from your device to a server you control — with no configuration files, no certificates, and no manual firewall rules.
+
+<CardGroup cols={2}>
+  <Card title="Runs on TCP / Port 443" icon="network-wired">
+    Tunnels all traffic over TCP, making it work on public WiFi and restricted networks where only TCP/443 is open or reliable.
+  </Card>
+  <Card title="Zero Configuration Files" icon="file-slash">
+    No config files, no post-setup steps. A single command on the server and a single command on the client is all it takes.
+  </Card>
+  <Card title="~25 KB Binary, No Dependencies" icon="microchip">
+    The compiled binary is roughly 25 KB with a small, constant memory footprint. No heap allocations and no external runtime dependencies.
+  </Card>
+  <Card title="Formally Verified Cryptography" icon="shield-halved">
+    Uses only modern cryptographic primitives from the [Charm](https://github.com/jedisct1/charm) library, which provides formally verified implementations.
+  </Card>
+  <Card title="Automatic Firewall & Routing" icon="sliders">
+    Configures iptables rules on Linux and ifconfig/route commands on BSD and macOS automatically on connect, and restores previous state cleanly on disconnect.
+  </Card>
+  <Card title="Automatic Reconnection" icon="arrows-rotate">
+    Attempts to reconnect up to 100 times if the connection drops, making it resilient to brief network interruptions.
+  </Card>
+  <Card title="IPv6 Leak Prevention" icon="lock">
+    Blocks IPv6 on the client side during the session so that traffic cannot leak outside the encrypted tunnel on dual-stack networks.
+  </Card>
+  <Card title="Cross-Platform" icon="laptop">
+    Supports Linux (kernel ≥ 3.17), macOS, OpenBSD, FreeBSD, DragonFly BSD, and NetBSD.
+  </Card>
+</CardGroup>
+
+## When to Use DSVPN
+
+DSVPN is the right tool when you need a straightforward, point-to-point encrypted tunnel and do not want to deal with the complexity of traditional VPN software. Common scenarios include:
+
+- **Restricted or untrusted networks** — public WiFi, hotel networks, or corporate environments where UDP is blocked and only TCP/80 or TCP/443 is available.
+- **Simple site-to-site routing** — connect a home or office network to a remote server without configuring a full mesh or managing certificates.
+- **Small device routing** — the minimal binary size and lack of external dependencies make DSVPN a practical choice for routers, Raspberry Pis, and other constrained hardware.
+- **Quick, ad-hoc tunnels** — when you need a tunnel in minutes rather than hours and do not want to maintain a PKI or edit configuration files.
+
+## When NOT to Use DSVPN
+
+DSVPN is intentionally limited in scope. You should look elsewhere if your requirements include:
+
+- **Multi-peer or mesh networking** — DSVPN is a strict point-to-point tunnel between one client and one server. It does not support multiple simultaneous peers or mesh topologies.
+- **Advanced access control** — there is no concept of user accounts, per-user certificates, or granular routing policies.
+- **Planned feature growth** — the project README explicitly states that extending DSVPN to solve different problems is not planned. If you need those features, fork it or choose a different tool.
+
+<Note>
+  DSVPN must be run as **root** (or with the `CAP_NET_ADMIN` capability on Linux) because it needs to create and configure a TUN network interface and modify the system routing table.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Build DSVPN from source with `make` or `zig build`, or install via Homebrew on macOS.
+  </Card>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Generate a shared key, start the server, and connect a client in under five minutes.
+  </Card>
+</CardGroup>

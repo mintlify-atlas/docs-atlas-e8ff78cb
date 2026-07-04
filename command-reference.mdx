@@ -1,0 +1,168 @@
+---
+title: "DSVPN Command-Line Reference"
+sidebarTitle: "Command Reference"
+description: "Complete reference for dsvpn server and dsvpn client positional arguments, default values, and the auto keyword behavior."
+---
+
+DSVPN uses positional arguments only — no flags, no configuration file. All parameters have sensible defaults accessible via the `auto` keyword, and trailing `auto` arguments can be omitted entirely. The result is that a fully working server needs just two arguments and a fully working client needs just three.
+
+## `dsvpn server`
+
+Run on the machine that will act as the VPN gateway and route client traffic to the internet.
+
+```text
+dsvpn  "server"
+       <key file>
+       <vpn server ip or name>|"auto"
+       <vpn server port>|"auto"
+       <tun interface>|"auto"
+       <local tun ip>|"auto"
+       <remote tun ip>|"auto"
+       <external ip>|"auto"
+```
+
+<ParamField path="mode" type="string" required>
+  Must be `server` to run in server mode.
+</ParamField>
+
+<ParamField path="key file" type="path" required>
+  Path to the 32-byte shared secret key file (e.g. `vpn.key`). Must contain exactly 32 raw bytes. See [Key Management](/key-management) for how to generate this file.
+</ParamField>
+
+<ParamField path="vpn server ip or name" type="string">
+  IP address or hostname to bind to. Use `auto` to listen on all interfaces (`0.0.0.0`). Default: `auto`.
+</ParamField>
+
+<ParamField path="vpn server port" type="string">
+  TCP port to listen on. Use `auto` for port `443`. Default: `auto` (443).
+</ParamField>
+
+<ParamField path="tun interface" type="string">
+  Name of the TUN interface to create. Use `auto` to let the OS assign a name. On Linux any name is valid; on macOS the name must follow the `utunN` pattern, so `auto` is recommended. Default: `auto`.
+</ParamField>
+
+<ParamField path="local tun ip" type="string">
+  Local IP address of the tunnel interface on the server side. Default: `auto` → `192.168.192.254`.
+</ParamField>
+
+<ParamField path="remote tun ip" type="string">
+  Remote (client-side) IP address of the tunnel. Must match the client's `local tun ip`. Default: `auto` → `192.168.192.1`.
+</ParamField>
+
+<ParamField path="external ip" type="string">
+  External IP address of the server, used when constructing firewall and routing rules. Default: `auto` (auto-detected from the system's default external interface).
+</ParamField>
+
+---
+
+## `dsvpn client`
+
+Run on each device that should tunnel its traffic through the DSVPN server.
+
+```text
+dsvpn  "client"
+       <key file>
+       <vpn server ip or name>
+       <vpn server port>|"auto"
+       <tun interface>|"auto"
+       <local tun ip>|"auto"
+       <remote tun ip>|"auto"
+       <gateway ip>|"auto"
+```
+
+<ParamField path="mode" type="string" required>
+  Must be `client` to run in client mode.
+</ParamField>
+
+<ParamField path="key file" type="path" required>
+  Path to the 32-byte shared secret key file. Must be identical to the key file used by the server.
+</ParamField>
+
+<ParamField path="vpn server ip or name" type="string" required>
+  IP address or hostname of the DSVPN server to connect to. This argument is required on the client; `auto` is **not** a valid value here.
+</ParamField>
+
+<ParamField path="vpn server port" type="string">
+  TCP port on the server to connect to. Use `auto` for port `443`. Must match the port the server is listening on. Default: `auto` (443).
+</ParamField>
+
+<ParamField path="tun interface" type="string">
+  Name of the TUN interface to create locally. Use `auto` to let the OS assign a name. Default: `auto`.
+</ParamField>
+
+<ParamField path="local tun ip" type="string">
+  Local IP address of the client-side tunnel interface. Must match the server's `remote tun ip`. Default: `auto` → `192.168.192.1`.
+</ParamField>
+
+<ParamField path="remote tun ip" type="string">
+  IP address of the server-side tunnel interface, used as the default gateway inside the tunnel. Must match the server's `local tun ip`. Default: `auto` → `192.168.192.254`.
+</ParamField>
+
+<ParamField path="gateway ip" type="string">
+  IP address of the local network router (the device's current default gateway). DSVPN needs this to add a specific host route for the VPN server so the VPN's own TCP socket is not sent back into the tunnel. Use `auto` to detect it from the system routing table. Default: `auto`.
+</ParamField>
+
+---
+
+## The `auto` Keyword
+
+`auto` is a placeholder that tells DSVPN to use the built-in default for that position. Because all parameters after `key file` have defaults, **trailing `auto` arguments can be omitted**. DSVPN reads arguments left-to-right; any argument not supplied at all is treated as `auto`.
+
+This means:
+
+- The minimum valid server command is `dsvpn server vpn.key` — all remaining positions default to `auto`.
+- The minimum valid client command is `dsvpn client vpn.key <server-ip>` — the server IP is the only required non-`auto` argument on the client.
+
+If you want to specify a value for a later positional argument while keeping an earlier one at its default, you must explicitly write `auto` for the earlier positions. For example, to set only the gateway IP on the client:
+
+```bash
+sudo ./dsvpn client vpn.key my-server.example.com 443 auto auto auto 192.168.1.1
+```
+
+---
+
+## Default Values
+
+| Parameter          | Server Default          | Client Default          |
+|--------------------|-------------------------|-------------------------|
+| port               | 443                     | 443                     |
+| tun interface      | OS-assigned             | OS-assigned             |
+| local tun ip       | 192.168.192.254         | 192.168.192.1           |
+| remote tun ip      | 192.168.192.1           | 192.168.192.254         |
+| MTU                | 9000 (1500 on NetBSD)   | 9000 (1500 on NetBSD)   |
+| reconnect attempts | N/A                     | 100                     |
+
+The local and remote tunnel IPs are mirror images of each other: what is "local" on the server is "remote" on the client, and vice versa. Using the `auto` defaults on both ends produces a correctly matched tunnel with no manual coordination required.
+
+---
+
+## Examples
+
+```bash
+# Server: minimal — port 443, all interfaces, default tunnel IPs
+sudo ./dsvpn server vpn.key
+
+# Server: custom port, everything else at defaults
+sudo ./dsvpn server vpn.key auto 1959
+
+# Server: custom port and custom tunnel IPs
+sudo ./dsvpn server vpn.key auto 1959 auto 10.8.0.1 10.8.0.2
+
+# Client: minimal — connects to server on port 443
+sudo ./dsvpn client vpn.key my-server.example.com
+
+# Client: custom port to match the server
+sudo ./dsvpn client vpn.key my-server.example.com 1959
+
+# Client: custom tunnel IPs to match a non-default server configuration
+sudo ./dsvpn client vpn.key my-server.example.com 1959 auto 10.8.0.2 10.8.0.1
+
+# Client: specify gateway manually when auto-detection fails
+sudo ./dsvpn client vpn.key my-server.example.com 443 auto auto auto 192.168.1.1
+```
+
+<Note>
+  DSVPN does not support flags such as `--port`, `-k`, or `--key`. All
+  configuration is passed as positional arguments in the exact order shown
+  above. Passing flags will cause DSVPN to print its usage message and exit.
+</Note>
