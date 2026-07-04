@@ -8,23 +8,6 @@ The DSVPN server listens for a single encrypted TCP connection and routes all cl
 
 ## Minimal Server Command
 
-If you want to use a non-default port, pass it as the third argument:
-
-```bash
-sudo ./dsvpn server vpn.key auto 443
-```
-
-- The first `auto` tells DSVPN to bind on all network interfaces (equivalent to `0.0.0.0`).
-- `443` is the TCP port to listen on. Port 443 is chosen because restricted networks — corporate firewalls, hotel Wi-Fi, airport hotspots — almost universally allow outbound TCP/443 (HTTPS).
-
-<Tip>
-  Use port 443 when clients may be on restricted networks that only permit
-  HTTPS traffic. Any port works on open networks; `1959` is used in the
-  official README examples.
-</Tip>
-
-## Simplest Form
-
 Because every argument after the key file defaults to `auto`, and trailing `auto` arguments can be omitted, the absolute minimum server command is:
 
 ```bash
@@ -32,6 +15,21 @@ sudo ./dsvpn server vpn.key
 ```
 
 This listens on all interfaces on port **443** with tunnel IPs `192.168.192.254` (local) and `192.168.192.1` (remote).
+
+If you want to use a non-default port, pass it as the third positional argument:
+
+```bash
+sudo ./dsvpn server vpn.key auto 1959
+```
+
+- The `auto` in position three tells DSVPN to bind on all network interfaces (equivalent to `0.0.0.0`).
+- `1959` is the TCP port to listen on.
+
+<Tip>
+  Use port 443 when clients may be on restricted networks that only permit
+  HTTPS traffic. Any port works on open networks; `1959` is used in the
+  official README examples.
+</Tip>
 
 ## What DSVPN Configures Automatically
 
@@ -41,28 +39,28 @@ DSVPN applies all necessary networking rules when it starts and removes them whe
   <Tab title="Linux">
     On Linux, DSVPN runs the following commands automatically:
 
-    **TUN interface setup**
+    **Enable IP forwarding and configure the TUN interface**
     ```bash
     sysctl net.ipv4.ip_forward=1
-    ip link set dev <tun> up
     ip addr add 192.168.192.254 peer 192.168.192.1 dev <tun>
     ip -6 addr add 64:ff9b::192.168.192.254 peer 64:ff9b::192.168.192.1/96 dev <tun>
+    ip link set dev <tun> up
     ```
 
-    **Anti-spoof rule** — drops packets claiming to come from the tunnel IP range but arriving on a non-TUN interface:
+    **Anti-spoof rule** — drops packets claiming to arrive at the tunnel IP from a non-TUN interface:
     ```bash
-    iptables -t nat -I PREROUTING -i <ext-if> -s <remote-tun-ip> -j DROP
+    iptables -t raw -I PREROUTING ! -i <tun> -d 192.168.192.254 -m addrtype ! --src-type LOCAL -j DROP
     ```
 
     **NAT masquerade** — rewrites outbound traffic from the client's tunnel IP to the server's external IP:
     ```bash
-    iptables -t nat -A POSTROUTING -o <ext-if> -s <remote-tun-ip> -j MASQUERADE
+    iptables -t nat -A POSTROUTING -o <ext-if> -s 192.168.192.1 -j MASQUERADE
     ```
 
     **Forward rules** — allow forwarding between the TUN interface and the external interface:
     ```bash
-    iptables -A FORWARD -i <tun> -o <ext-if> -j ACCEPT
-    iptables -A FORWARD -i <ext-if> -o <tun> -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -t filter -A FORWARD -i <ext-if> -o <tun> -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -t filter -A FORWARD -i <tun> -o <ext-if> -j ACCEPT
     ```
   </Tab>
   <Tab title="macOS / BSD">
@@ -73,14 +71,14 @@ DSVPN applies all necessary networking rules when it starts and removes them whe
     sysctl -w net.inet.ip.forwarding=1
     ```
 
-    **Configure TUN interface**
+    **Configure TUN interface (IPv4)**
     ```bash
     ifconfig <tun> 192.168.192.254 192.168.192.1 up
     ```
 
-    **IPv6 TUN address**
+    **Configure TUN interface (IPv6)**
     ```bash
-    ifconfig <tun> inet6 64:ff9b::192.168.192.254 64:ff9b::192.168.192.1/96 up
+    ifconfig <tun> inet6 64:ff9b::192.168.192.254 64:ff9b::192.168.192.1 prefixlen 128 up
     ```
 
     NAT (masquerade) on macOS/BSD must be handled by your packet filter (`pf` or `ipfw`). See the OpenBSD section below.
@@ -131,18 +129,4 @@ For production deployments, run DSVPN under a process supervisor so it restarts 
   </Card>
 </CardGroup>
 
-A minimal systemd unit file looks like this:
-
-```text
-[Unit]
-Description=DSVPN Server
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/dsvpn server /etc/dsvpn/vpn.key auto 443
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+These community resources provide ready-made service configurations. DSVPN itself does not ship an official systemd unit file.

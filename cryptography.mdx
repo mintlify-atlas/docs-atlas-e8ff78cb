@@ -1,14 +1,14 @@
 ---
-title: "DSVPN Cryptography: Charm AEAD Stream Cipher"
+title: "DSVPN Cryptography: Charm AEAD, Key Exchange, and Encryption"
 sidebarTitle: "Cryptography"
-description: "DSVPN encrypts traffic using the Charm library, a formally verified AEAD stream cipher. Learn the key exchange protocol, packet format, and session key derivation."
+description: "DSVPN encrypts traffic using the Charm AEAD library. Learn the Xoodoo-based key exchange protocol, packet wire format, and per-session key derivation."
 ---
 
 DSVPN's cryptographic layer is powered by [Charm](https://github.com/jedisct1/charm), a standalone AEAD stream cipher library with formally verified implementations. All encryption, authentication, hashing, and random number generation go through Charm's six public functions — no OpenSSL, no libsodium, no external dependencies of any kind.
 
 ## The Charm Library
 
-Charm is an AEAD (Authenticated Encryption with Associated Data) stream cipher built on the [Xoodoo](https://keccak.team/xoodoo.html) permutation — a 12-round ARX-based construction operating on a 48-byte state represented as 12 `uint32_t` words. Implementations have been formally verified and the library is embedded directly in the DSVPN source tree.
+Charm is an AEAD (Authenticated Encryption with Associated Data) stream cipher built on the [Xoodoo](https://keccak.team/xoodoo.html) permutation — a 12-round construction operating on a 48-byte state represented as 12 `uint32_t` words. Xoodoo applies a sequence of mixing (θ), plane-shifting (ρ_west), round-constant injection (ι), nonlinear (χ), and rotation (ρ_east) steps per round, with SIMD-accelerated paths for SSSE3 and NEON. The library is embedded directly in the DSVPN source tree.
 
 Key properties:
 

@@ -26,40 +26,40 @@ After the TCP connection and cryptographic handshake succeed, DSVPN performs all
 
 <Tabs>
   <Tab title="Linux">
-    DSVPN sets up a **policy routing** scheme on Linux that avoids routing loops. The VPN's own TCP socket is excluded from the policy table using a socket mark, so tunnelled traffic never recursively re-enters the VPN.
+    DSVPN sets up a **policy routing** scheme on Linux that avoids routing loops. The VPN's own TCP socket is excluded from the policy table using a socket mark (`SO_MARK=42069`), so tunnelled traffic never recursively re-enters the VPN.
 
-    **TUN interface**
-    ```bash
-    ip link set dev <tun> up
-    ip addr add 192.168.192.1 peer 192.168.192.254 dev <tun>
-    ip -6 addr add 64:ff9b::192.168.192.1 peer 64:ff9b::192.168.192.254/96 dev <tun>
-    ```
-
-    **BBR congestion control** — enabled on the outer TCP socket for better performance:
+    **BBR congestion control** — enabled system-wide for better performance on the outer TCP socket:
     ```bash
     sysctl net.ipv4.tcp_congestion_control=bbr
     ```
 
+    **TUN interface setup**
+    ```bash
+    ip link set dev <tun> up
+    iptables -t raw -I PREROUTING ! -i <tun> -d 192.168.192.1 -m addrtype ! --src-type LOCAL -j DROP
+    ip addr add 192.168.192.1 peer 192.168.192.254 dev <tun>
+    ip -6 addr add 64:ff9b::192.168.192.1 peer 64:ff9b::192.168.192.254/96 dev <tun>
+    ```
+
     **Policy routing table 42069** — all unmarked traffic uses a separate routing table that sends everything through the TUN:
     ```bash
-    ip route add default via 192.168.192.254 table 42069
-    ip rule add not fwmark 42069 lookup 42069
-    ip rule add fwmark 42069 lookup main suppress_prefixlength 0
+    ip route add default dev <tun> table 42069
+    ip -6 route add default dev <tun> table 42069
+    ip rule add not fwmark 42069 table 42069
+    ip -6 rule add not fwmark 42069 table 42069
+    ip rule add table main suppress_prefixlength 0
+    ip -6 rule add table main suppress_prefixlength 0
     ```
 
     The VPN's own TCP socket to the server is marked with `SO_MARK=42069`, so it looks up the main routing table and reaches the server directly — preventing a routing loop.
-
-    **Anti-spoof protection**
-    ```bash
-    iptables -t nat -I PREROUTING -d <local-tun-ip> ! -i <tun> -j DROP
-    ```
   </Tab>
   <Tab title="macOS / BSD">
     On macOS and BSD, DSVPN uses **split default routes** to tunnel all traffic while keeping the VPN connection itself on the original gateway.
 
-    **TUN interface**
+    **TUN interface setup (IPv4 and IPv6)**
     ```bash
     ifconfig <tun> 192.168.192.1 192.168.192.254 up
+    ifconfig <tun> inet6 64:ff9b::192.168.192.1 64:ff9b::192.168.192.254 prefixlen 128 up
     ```
 
     **Server route via original gateway** — ensures the VPN TCP connection bypasses the tunnel:
@@ -69,14 +69,14 @@ After the TCP connection and cryptographic handshake succeed, DSVPN performs all
 
     **Split default routes** — covering the entire address space in two halves routes all traffic through the TUN without replacing the `0.0.0.0/0` default route:
     ```bash
-    route add 0.0.0.0/1   192.168.192.254
-    route add 128.0.0.0/1 192.168.192.254
+    route add 0/1 192.168.192.254
+    route add 128/1 192.168.192.254
     ```
 
     **IPv6 blackhole routes** — prevent IPv6 traffic from leaking outside the VPN:
     ```bash
-    route add -inet6 0000::/1   -blackhole
-    route add -inet6 8000::/1   -blackhole
+    route add -inet6 -blackhole 0000::/1 64:ff9b::192.168.192.254
+    route add -inet6 -blackhole 8000::/1 64:ff9b::192.168.192.254
     ```
   </Tab>
 </Tabs>

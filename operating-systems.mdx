@@ -128,13 +128,13 @@ DSVPN supports several Unix-like operating systems out of the box. Linux and mac
 
     **Privilege restriction with `pledge(2)`**
 
-    After the TUN interface and TCP socket are set up, DSVPN calls `pledge(2)` to restrict itself to the following capabilities only:
+    After the TUN interface is created and the MTU is set — but before firewall rules are applied or any TCP connection is established — DSVPN calls `pledge(2)` to restrict itself to the following capabilities only:
 
     ```text
     stdio proc exec dns inet
     ```
 
-    This means that after startup, the process cannot open new files, access the filesystem arbitrarily, or perform most system calls — significantly reducing the attack surface if the process is compromised.
+    The `proc` and `exec` promises allow DSVPN to fork and exec the shell commands that configure firewall rules and routing. After those commands run, the process is constrained to standard I/O, DNS resolution, and TCP networking only, significantly reducing the attack surface if the process is compromised.
 
     **Required `pf` rule (server mode)**
 

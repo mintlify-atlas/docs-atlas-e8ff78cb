@@ -54,7 +54,7 @@ DSVPN compiles to a single ~25 KB binary with no external runtime dependencies. 
     make
     ```
 
-    Full server and client routing support is available on **OpenBSD, FreeBSD, DragonFly BSD, and NetBSD**. On other BSDs, only client and point-to-point operation is supported.
+    On BSD systems, DSVPN supports **client and point-to-point operation only**. Full server-side routing (automatic iptables/route management for all-traffic forwarding) is only available on Linux and macOS.
 
     <Note>
       On NetBSD, the default MTU is set to **1500** instead of the usual 9000 used on other platforms.

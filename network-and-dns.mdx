@@ -90,7 +90,7 @@ DSVPN mitigates this with several techniques applied to the outer TCP connection
 
 - **`TCP_NOTSENT_LOWAT = 128 KB`** — limits how much unsent data can accumulate in the kernel send buffer, reducing bufferbloat and ensuring the inner congestion controller sees timely feedback.
 - **Packet dropping on congestion** — when the outer layer signals congestion, DSVPN drops inner packets rather than buffering them indefinitely, allowing the inner TCP stack to detect loss and back off naturally.
-- **BBR congestion control** (`TCP_CONGESTION = "bbr"`) — set on the outer TCP socket on Linux. BBR uses bandwidth and RTT estimates rather than packet loss as its primary signal, which makes it significantly more robust for tunneled traffic.
+- **BBR congestion control** (`TCP_CONGESTION = "bbr"`) — set on the outer TCP socket on platforms that support the `TCP_CONGESTION` socket option (primarily Linux). BBR uses bandwidth and RTT estimates rather than packet loss as its primary signal, which makes it significantly more robust for tunneled traffic.
 - **`TCP_NODELAY` and `TCP_QUICKACK`** — disable Nagle's algorithm and delayed ACKs on the outer connection to reduce per-packet latency.
 - **`TCP_USER_TIMEOUT = 60 000 ms`** — if the connection goes silent for 60 seconds, the socket is considered dead and the client reconnects, rather than hanging indefinitely.
 

@@ -1,5 +1,5 @@
 ---
-title: "DSVPN Security Model and Threat Analysis"
+title: "DSVPN Security: Threat Model, Hardening, and Limitations"
 sidebarTitle: "Security"
 description: "DSVPN's security relies on a 32-byte pre-shared key. Understand the threat model, what DSVPN protects against, and its known limitations."
 ---
@@ -85,7 +85,7 @@ DSVPN is deliberately minimal to keep the auditable surface area small.
 - **No heap allocations**: `Buf` and `Context` structs are stack-allocated in `main()`, eliminating heap-spray, use-after-free, and double-free attack vectors
 - **No external dependencies**: no OpenSSL, no libsodium, no protocol parsers beyond simple length-prefixed framing
 - **No configuration file parser**: all parameters are positional command-line arguments
-- **Compiler hardening**: built with `-Wall -W -Wshadow -Wmissing-prototypes -O3 -march=native`
+- **Compiler hardening**: built with `-march=native -mtune=native -O3 -Wall -W -Wshadow -Wmissing-prototypes`
 - **CodeQL analysis**: static analysis scans run automatically in CI on every commit
 
 The codebase consists of a small number of C source files. The platform-specific surface area — TUN device creation and firewall rule generation — is isolated in `src/os.c`.
